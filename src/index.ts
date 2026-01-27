@@ -19,8 +19,8 @@ async function main() {
   const username = await question('Steam username: ');
   const password = await question('Steam password: ');
   const sharedSecret = await question('Shared secret (for 2FA, leave empty if none): ');
-  const appidStr = await question('App ID (e.g., 730 for CS:GO): ');
-  const contextidStr = await question('Context ID (e.g., 2 for CS:GO): ');
+  const appidStr = await question('App ID (e.g., 753 for STEAM): ');
+  const contextidStr = await question('Context ID (e.g., 6 for steam): ');
 
   const appid = parseInt(appidStr);
   const contextid = parseInt(contextidStr);
@@ -169,37 +169,44 @@ async function getRecommendedPrice(cookiesStr: string, appid: number, marketHash
   return null;
 }
 
-async function sellItem(cookiesStr: string, item: any, price: number, appid: number, steamId: string): Promise<void> {
+async function sellItem(cookiesStr: string, item: any, price: number | string, appid: number, steamId: string): Promise<void> {
     console.log(`Selling item ${item.market_hash_name} at price ${price} cents`);
-  const sellUrl = 'https://steamcommunity.com/market/sellitem/';
-  const formData = new URLSearchParams();
-  formData.append('sessionid', cookiesStr.match(/sessionid=([^;]+)/)?.[1] || '');
-  formData.append('appid', item.appid.toString());
-  formData.append('contextid', item.contextid.toString());
-  formData.append('assetid', item.assetid || item.id);
-  formData.append('amount', '1');
-  formData.append('price', price.toString());
+    const sellUrl = 'https://steamcommunity.com/market/sellitem/';
+    
+    // Extract sessionid from cookies more reliably
+    const sessionidMatch = cookiesStr.match(/sessionid=([^;]+)/);
+    const sessionid = sessionidMatch ? sessionidMatch[1] : '000000000000000000000000';
+    
+    const formData = new URLSearchParams();
+    formData.append('sessionid', sessionid);
+    formData.append('appid', item.appid.toString());
+    formData.append('contextid', item.contextid.toString());
+    formData.append('assetid', item.assetid || item.id);
+    formData.append('amount', '1');
+    formData.append('price', price.toString());
 
-  const response = await fetch(sellUrl, {
-    method: 'POST',
-    headers: {
-      'Cookie': cookiesStr,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Referer': 'https://steamcommunity.com/market/',
-      'Origin': 'https://steamcommunity.com'
-    },
-    body: formData.toString()
-  });
+    const response = await fetch(sellUrl, {
+        method: 'POST',
+        headers: {
+            'Cookie': cookiesStr,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': `https://steamcommunity.com/profiles/${steamId}/inventory/`,
+            'Origin': 'https://steamcommunity.com'
+        },
+        body: formData.toString()
+    });
 
-  if (!response.ok) {
-    throw new Error(`Sell failed: ${response.status}`);
-  }
+    console.log(`Sell response status: ${JSON.stringify(response)}`);
 
-  const data = await response.json() as any;
-  if (!data.success) {
-    throw new Error(`Sell failed: ${data.message || 'Unknown error'}`);
-  }
+    if (!response.ok) {
+        throw new Error(`Sell failed: ${response.status}`);
+    }
+
+    const data = await response.json() as any;
+    if (!data || !data.success) {
+        throw new Error(`Sell failed: ${data?.message || 'Unknown error'}`);
+    }
 }
 
 function delay(ms: number) {
