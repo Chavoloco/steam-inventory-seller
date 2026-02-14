@@ -16,11 +16,11 @@ function question(query: string): Promise<string> {
 }
 
 async function main() {
-  const username = await question('Steam username: ');
-  const password = await question('Steam password: ');
-  const sharedSecret = await question('Shared secret (for 2FA, leave empty if none): ');
+  const username = process.env.username || await question('Steam username: ');
+  const password = process.env.password || await question('Steam password: ');
   const appidStr = await question('App ID (e.g., 753 for STEAM): ');
   const contextidStr = await question('Context ID (e.g., 6 for steam): ');
+  const sharedSecret = await question('Shared secret (for 2FA, leave empty if none): ');
 
   const appid = parseInt(appidStr);
   const contextid = parseInt(contextidStr);
@@ -103,7 +103,6 @@ async function main() {
 
     if (startResult.actionRequired) {
       console.log('Mobile confirmation required. Please check your Steam mobile app and approve the login.');
-      // Do not cancel, wait for authenticated event
     }
   } catch (ex: any) {
     if (ex.code === 429) {
@@ -136,7 +135,8 @@ async function sellItems(cookies: string[], items: any[], appid: number, steamId
   for (const item of items) {
     try {
       const price = await getRecommendedPrice(cookiesStr, appid, item.market_hash_name);
-      if (price) {
+
+      if (price !== null) {
         await sellItem(cookiesStr, item, price, appid, steamId);
         console.log(`Sold ${item.market_hash_name} for ${price} cents`);
         // Delay to avoid rate limits
@@ -154,19 +154,29 @@ async function getRecommendedPrice(cookiesStr: string, appid: number, marketHash
   const priceUrl = `https://steamcommunity.com/market/priceoverview/?appid=${appid}&market_hash_name=${encodeURIComponent(marketHashName)}&currency=1`;
   const response = await fetch(priceUrl, {
     headers: {
-      'Cookie': cookiesStr,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      'Accept': 'application/json'
     }
   });
+
   if (!response.ok) {
+    const body = await response.text().catch(() => '<no body>');
+    console.warn(`priceoverview fetch failed (${response.status}) for "${marketHashName}": ${body}`);
     return null;
   }
+
   const data = await response.json() as any;
-  if (data.success && data.lowest_price) {
-    const priceStr = data.lowest_price.replace('$', '');
-    return priceStr;
-  }
-  return null;
+  console.log('priceoverview response:', data);
+
+  if (!data?.success) return null;
+
+  const priceField = data.lowest_price ?? data.median_price;
+  if (!priceField) return null;
+
+  const normalized = String(priceField).replace(/[^\d.]/g, '');
+  const floatVal = parseFloat(normalized);
+  if (isNaN(floatVal)) return null;
+  return Math.round(floatVal * 100);
 }
 
 async function sellItem(cookiesStr: string, item: any, price: number | string, appid: number, steamId: string): Promise<void> {
@@ -196,8 +206,6 @@ async function sellItem(cookiesStr: string, item: any, price: number | string, a
         },
         body: formData.toString()
     });
-
-    console.log(`Sell response status: ${JSON.stringify(response)}`);
 
     if (!response.ok) {
         throw new Error(`Sell failed: ${response.status}`);
