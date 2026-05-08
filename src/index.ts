@@ -1,5 +1,5 @@
 import * as readline from 'readline';
-const SteamCommunity = require('steamcommunity');
+require('dotenv').config();
 const SteamTotp = require('steam-totp');
 const {LoginSession, EAuthTokenPlatformType} = require('steam-session');
 
@@ -16,19 +16,28 @@ function question(query: string): Promise<string> {
 }
 
 async function main() {
-  const username = process.env.username || await question('Steam username: ');
-  const password = process.env.password || await question('Steam password: ');
-  const appidStr = await question('App ID (e.g., 753 for STEAM): ');
-  const contextidStr = await question('Context ID (e.g., 6 for steam): ');
-  const sharedSecret = await question('Shared secret (for 2FA, leave empty if none): ');
+  const username = process.env.STEAM_USERNAME || await question('Steam username: ');
+  const password = process.env.STEAM_PASSWORD || await question('Steam password: ');
+  const appidStr = process.env.STEAM_APPID || await question('App ID (e.g., 753 for STEAM): ');
+  const contextidStr = process.env.STEAM_CONTEXTID || await question('Context ID (e.g., 6 for steam): ');
+  const sharedSecret = await question('Steam shared secret or 2FA code (leave empty if none): ');
+
+  if (!username || !password) {
+    throw new Error('Steam username and password are required. Set STEAM_USERNAME and STEAM_PASSWORD in .env or enter them when prompted.');
+  }
 
   const appid = parseInt(appidStr);
   const contextid = parseInt(contextidStr);
 
-  const community = new (SteamCommunity as any)();
-
   // Use steam-session for login to handle mobile confirmation
   const session = new LoginSession(EAuthTokenPlatformType.WebBrowser);
+
+  function getSteamGuardCode(secret: string): string | undefined {
+    const input = secret.trim();
+    if (!input) return undefined;
+    // Accept either a direct 2FA code or the shared secret used by steam-totp.
+    return input.length === 5 ? input : SteamTotp.generateAuthCode(input);
+  }
 
   session.on('authenticated', async () => {
     try {
@@ -98,7 +107,7 @@ async function main() {
     let startResult = await session.startWithCredentials({
       accountName: username,
       password: password,
-      steamGuardCode: sharedSecret ? SteamTotp.generateAuthCode(sharedSecret) : undefined
+      steamGuardCode: getSteamGuardCode(sharedSecret)
     });
 
     if (startResult.actionRequired) {
@@ -106,21 +115,30 @@ async function main() {
     }
   } catch (ex: any) {
     if (ex.code === 429) {
-      console.log('Rate limited by Steam. Waiting 30 seconds before retrying...');
-      await delay(30000);
-      try {
-        const startResult = await session.startWithCredentials({
-          accountName: username,
-          password: password,
-          steamGuardCode: sharedSecret ? SteamTotp.generateAuthCode(sharedSecret) : undefined
-        });
-        if (startResult.actionRequired) {
-          console.log('Mobile confirmation required. Please check your Steam mobile app and approve the login.');
+      const retryDelays = [30000, 60000, 120000];
+      for (let i = 0; i < retryDelays.length; i++) {
+        const delayMs = retryDelays[i];
+        console.log(`Rate limited by Steam. Waiting ${delayMs / 1000} seconds before retrying...`);
+        await delay(delayMs);
+
+        try {
+          const startResult = await session.startWithCredentials({
+            accountName: username,
+            password: password,
+            steamGuardCode: getSteamGuardCode(sharedSecret)
+          });
+          if (startResult.actionRequired) {
+            console.log('Mobile confirmation required. Please check your Steam mobile app and approve the login.');
+          }
+          return;
+        } catch (retryEx: any) {
+          if (retryEx.code !== 429 || i === retryDelays.length - 1) {
+            console.error('Failed to start login after retry:', retryEx);
+            rl.close();
+            return;
+          }
+          console.log(`Still rate limited after retry ${i + 1}.`);
         }
-      } catch (retryEx) {
-        console.error('Failed to start login after retry:', retryEx);
-        rl.close();
-        return;
       }
     } else {
       console.error('Failed to start login:', ex);
